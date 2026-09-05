@@ -1,0 +1,15 @@
+pmbootstrap init
+pmbootstrap install --sdcard=/dev/sda
+cd linux
+source ~/tmp/cm/pmbootstrap/helpers/envkernel.sh
+make ums9230_defconfig
+make
+make INSTALL_MOD_PATH=7.1.0-rc1-sprd modules_install
+cd ..
+cp linux/.output/arch/arm64/boot/Image uniLoader/blob/Image
+cp linux/.output/arch/arm64/boot/dts/sprd/ums9230-teclast-Z3D1.dtb uniLoader/blob/dtb
+touch uniLoader/blob/ramdisk
+cd uniLoader
+make ARCH=aarch64 CROSS_COMPILE=aarch64-linux-gnu-
+/pm/chroot_native/usr/bin/mkbootimg --header_version 4 --kernel ./uniLoader --ramdisk ./blob/ramdisk --cmdline '' -o raw-boot.img --os_version 12.0.0 --os_patch_level 2022-11 
+/spreadtrum_flash/spd_dump --wait 300 exec_addr 0x65015f08 fdl  fdl1-dl.bin 0x65000800 fdl fdl2-dl.bin 0x9efffe00  exec w boot_a uniLoader/raw-boot.img reset
