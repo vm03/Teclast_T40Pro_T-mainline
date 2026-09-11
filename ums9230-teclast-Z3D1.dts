@@ -84,7 +84,7 @@
 		key-power {
 			label = "Power Key";
 			linux,code = <KEY_POWER>;
-			gpios = <&ap_gpio 1 GPIO_ACTIVE_LOW>;
+			gpios = <&pmic_eic 1 GPIO_ACTIVE_LOW>;
 			debounce-interval = <0x02>;
 			wakeup-source;
 		};
