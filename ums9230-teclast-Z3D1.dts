@@ -276,10 +276,10 @@
                 "Speaker", "Speaker Amp OUTR",
                 "Modem Uplink", "Modem DAI AOUT",
                 "Modem DAI AIN", "Modem Downlink";
-        aux-devs = <&modem_dai>, <&speaker_amp>;
-                
+        aux-devs = <&modem_dai>, <&speaker_amp>, <&aw87390_pa_1>, <&aw87390_pa_2>, <&aw87390_pa_3>, <&aw87390_pa_4>;
+
         status = "okay";
-                
+
         iis0-dai-link {
                 link-name = "IIS0";
                 dai-format = "i2s";
@@ -370,3 +370,68 @@
         status = "okay";
 };
 
+&i2c4 { 
+    status = "okay";
+
+    #address-cells = <1>;
+    #size-cells = <0>;
+
+
+        aw87390_pa_1: aw87xxx_pa@58 {
+            compatible = "awinic,aw87xxx_pa";
+            reg = <0x58>;
+            dev_index = <0x00>;
+            status = "okay";
+        };
+
+        aw87390_pa_2: aw87xxx_pa@59 {
+            compatible = "awinic,aw87xxx_pa";
+            reg = <0x59>;
+            dev_index = <0x01>;
+            status = "okay";
+        };
+
+        aw87390_pa_3: aw87xxx_pa@5a {
+            compatible = "awinic,aw87xxx_pa";
+            reg = <0x5a>;
+            dev_index = <0x02>;
+            status = "okay";
+        };
+
+        aw87390_pa_4: aw87xxx_pa@5b {
+            compatible = "awinic,aw87xxx_pa";
+            reg = <0x5b>;
+            dev_index = <0x03>;
+            status = "okay";
+        };
+
+
+/*        aw87390_pa_1: audio-codec@58 {
+            compatible = "awinic,aw87390";
+            reg = <0x58>;
+            #sound-dai-cells = <0>;
+            awinic,audio-channel = <0>;
+        };
+
+        aw87390_pa_2: audio-codec@59 {
+            compatible = "awinic,aw87390";
+            reg = <0x59>;
+            #sound-dai-cells = <0>;
+            awinic,audio-channel = <1>;
+        };
+
+        aw87390_pa_3: audio-codec@5a {
+            compatible = "awinic,aw87390";
+            reg = <0x5a>;
+            #sound-dai-cells = <0>;
+            awinic,audio-channel = <2>;
+        };
+
+        aw87390_pa_4: audio-codec@5b {
+            compatible = "awinic,aw87390";
+            reg = <0x5b>;
+            #sound-dai-cells = <0>;
+            awinic,audio-channel = <3>;
+        }; */
+
+};
