@@ -1,4 +1,4 @@
-From 407da700714879885b03ce40c8b7e1e0326741be Mon Sep 17 00:00:00 2001
+From 085137931a3e352fd31dc3a919c91c160c8ec564 Mon Sep 17 00:00:00 2001
 From: Vasiliy Borisov <vasy@vasy.ru>
 Date: Mon, 28 Sep 2026 22:45:44 +0300
 Subject: [PATCH] add aw87xxx downstream  driver
@@ -8,7 +8,7 @@ Subject: [PATCH] add aw87xxx downstream  driver
  sound/soc/codecs/Makefile                     |    1 +
  sound/soc/codecs/aw87xxx/Kconfig              |    5 +
  sound/soc/codecs/aw87xxx/Makefile             |    4 +
- sound/soc/codecs/aw87xxx/aw87xxx.c            | 2047 +++++++
+ sound/soc/codecs/aw87xxx/aw87xxx.c            | 2066 +++++++
  sound/soc/codecs/aw87xxx/aw87xxx.h            |  154 +
  sound/soc/codecs/aw87xxx/aw87xxx_acf_bin.c    | 1624 +++++
  sound/soc/codecs/aw87xxx/aw87xxx_acf_bin.h    |  205 +
@@ -30,7 +30,7 @@ Subject: [PATCH] add aw87xxx downstream  driver
  sound/soc/codecs/aw87xxx/aw87xxx_pid_76_reg.h | 1205 ++++
  sound/soc/codecs/aw87xxx/aw87xxx_pid_9b_reg.h |   81 +
  sound/soc/codecs/aw87xxx/aw87xxx_platform.h   |   18 +
- 26 files changed, 23004 insertions(+)
+ 26 files changed, 23023 insertions(+)
  create mode 100644 sound/soc/codecs/aw87xxx/Kconfig
  create mode 100644 sound/soc/codecs/aw87xxx/Makefile
  create mode 100644 sound/soc/codecs/aw87xxx/aw87xxx.c
@@ -102,10 +102,10 @@ index 000000000000..d32f319a5b01
 +
 diff --git a/sound/soc/codecs/aw87xxx/aw87xxx.c b/sound/soc/codecs/aw87xxx/aw87xxx.c
 new file mode 100644
-index 000000000000..82cb5e360fe0
+index 000000000000..327fb50c2d71
 --- /dev/null
 +++ b/sound/soc/codecs/aw87xxx/aw87xxx.c
-@@ -0,0 +1,2047 @@
+@@ -0,0 +1,2066 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * aw87xxx.c  aw87xxx pa module
@@ -169,7 +169,6 @@ index 000000000000..82cb5e360fe0
 +#define AW87XXX_I2C_NAME	"aw87xxx_pa"
 +#define AW87XXX_DRIVER_VERSION	"v4.0.7"
 +#define AW87XXX_FW_BIN_NAME	"aw87xxx_acf.bin"
-+#define AW87XXX_PROF_MUSIC	"Music"
 +
 +/*************************************************************************
 + * aw87xxx variable
@@ -1352,8 +1351,6 @@ index 000000000000..82cb5e360fe0
 +exit_vmalloc_failed:
 +	mutex_unlock(&aw87xxx->reg_lock);
 +	release_firmware(cont);
-+	// Updating profile to "Music" because the firmware is set to "off" during init
-+	aw87xxx_update_profile(aw87xxx, AW87XXX_PROF_MUSIC);
 +}
 +
 +static void aw87xxx_fw_load_init(struct aw87xxx *aw87xxx)
@@ -1919,8 +1916,27 @@ index 000000000000..82cb5e360fe0
 +static int aw_component_probe(
 +	struct snd_soc_component *component)
 +{
-+	pr_info("[debug] %s: running \r\n", __func__);
-+	return 0;
++    struct aw87xxx *aw87xxx = dev_get_drvdata(component->dev);
++    int ret;
++
++    pr_info("[debug] %s: running for dev_index=%d\n", __func__, aw87xxx->dev_index);
++
++    ret = aw87xxx_kcontrol_dynamic_create(aw87xxx, component);
++    if (ret < 0) {
++	pr_err("aw87xxx: Failed to create dynamic controls for dev %d, ret = %d\n",
++	    aw87xxx->dev_index, ret);
++	return ret;
++    }
++
++    if (aw87xxx->dev_index == 0) {
++	ret = aw87xxx_public_kcontrol_create(aw87xxx, component);
++	if (ret < 0) {
++	    pr_err("aw87xxx: Failed to create public controls, ret = %d\n", ret);
++	    return ret;
++	}
++    }
++
++    return 0;
 +}
 +
 +static void aw_component_remove(
@@ -2126,6 +2142,9 @@ index 000000000000..82cb5e360fe0
 +	.shutdown = aw87xxx_i2c_shutdown,
 +	.id_table = aw87xxx_i2c_id,
 +};
++
++MODULE_DEVICE_TABLE(of, extpa_of_match);
++MODULE_DEVICE_TABLE(i2c, aw87xxx_i2c_id);
 +
 +static int __init aw87xxx_pa_init(void)
 +{

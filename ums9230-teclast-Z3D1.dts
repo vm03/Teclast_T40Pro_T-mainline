@@ -139,12 +139,6 @@
                 default-brightness-level = <100>;
         };
 
-        speaker_amp: speaker-amp {
-                compatible = "simple-audio-amplifier";
-                sound-name-prefix = "Speaker Amp";
-                enable-gpios = <&ap_gpio 136 GPIO_ACTIVE_HIGH>;
-        };
-
 };
 
 
@@ -266,17 +260,14 @@
                 "Speaker", "Speaker",
                 "Line", "Modem Uplink",
                 "Line", "Modem Downlink";
-        pin-switches = "Speaker";
         audio-routing =
                 "Headphones", "HPL_OUT",
                 "Headphones", "HPR_OUT",
-                "Speaker Amp INL", "HPL_OUT",
-                "Speaker Amp INR", "HPL_OUT",
-                "Speaker", "Speaker Amp OUTL",
-                "Speaker", "Speaker Amp OUTR",
+                "Speaker", "HPL_OUT",
+                "Speaker", "HPR_OUT",
                 "Modem Uplink", "Modem DAI AOUT",
                 "Modem DAI AIN", "Modem Downlink";
-        aux-devs = <&modem_dai>, <&speaker_amp>, <&aw87390_pa_1>, <&aw87390_pa_2>, <&aw87390_pa_3>, <&aw87390_pa_4>;
+        aux-devs = <&modem_dai>, <&aw87390_pa_1>, <&aw87390_pa_2>, <&aw87390_pa_3>, <&aw87390_pa_4>;
 
         status = "okay";
 
