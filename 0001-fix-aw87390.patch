@@ -1,0 +1,51 @@
+From 40bf72a08509410117fa8b1465f5e264aa9be1bc Mon Sep 17 00:00:00 2001
+From: Vasiliy Borisov <vasy@vasy.ru>
+Date: Wed, 30 Sep 2026 15:29:01 +0300
+Subject: [PATCH] fix aw87390
+
+---
+ sound/soc/codecs/aw88395/aw88395_data_type.h | 1 +
+ sound/soc/codecs/aw88395/aw88395_lib.c       | 8 +-------
+ 2 files changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/sound/soc/codecs/aw88395/aw88395_data_type.h b/sound/soc/codecs/aw88395/aw88395_data_type.h
+index e7aa56178b36..323904d54865 100644
+--- a/sound/soc/codecs/aw88395/aw88395_data_type.h
++++ b/sound/soc/codecs/aw88395/aw88395_data_type.h
+@@ -64,6 +64,7 @@ enum aw_prof_type {
+ 	AW88395_PROFILE_FM,
+ 	AW88395_PROFILE_NOTIFICATION,
+ 	AW88395_PROFILE_RECEIVER,
++	AW88395_PROFILE_OFF,
+ 	AW88395_PROFILE_MAX,
+ };
+ 
+diff --git a/sound/soc/codecs/aw88395/aw88395_lib.c b/sound/soc/codecs/aw88395/aw88395_lib.c
+index 056adbcd1ce8..2ca6feae5a3f 100644
+--- a/sound/soc/codecs/aw88395/aw88395_lib.c
++++ b/sound/soc/codecs/aw88395/aw88395_lib.c
+@@ -19,7 +19,7 @@ DECLARE_CRC8_TABLE(aw_crc8_table);
+ static char *profile_name[AW88395_PROFILE_MAX] = {
+ 	"Music", "Voice", "Voip", "Ringtone",
+ 	"Ringtone_hs", "Lowpower", "Bypass",
+-	"Mmi", "Fm", "Notification", "Receiver"
++	"Mmi", "Fm", "Notification", "Receiver", "Off"
+ };
+ 
+ static int aw_parse_bin_header(struct aw_device *aw_dev, struct aw_bin *bin);
+@@ -213,12 +213,6 @@ static int aw_parse_bin_header(struct aw_device *aw_dev, struct aw_bin *bin)
+ {
+ 	unsigned int bin_data_type;
+ 
+-	if (bin->info.len < sizeof(struct bin_header_info)) {
+-		dev_err(aw_dev->dev, "bin_header_info size[%d] overflow file size[%d]\n",
+-				(int)sizeof(struct bin_header_info), bin->info.len);
+-		return -EINVAL;
+-	}
+-
+ 	bin_data_type = le32_to_cpup((void *)(bin->p_addr + BIN_DATA_TYPE_OFFSET));
+ 	dev_dbg(aw_dev->dev, "aw_bin_parse bin_data_type 0x%x\n", bin_data_type);
+ 	switch (bin_data_type) {
+-- 
+2.55.0
+

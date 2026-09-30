@@ -256,18 +256,21 @@
 &sound {
         model = "reeder-s19mps";
         widgets =
-                "Headphone", "Headphones",
                 "Speaker", "Speaker",
                 "Line", "Modem Uplink",
                 "Line", "Modem Downlink";
         audio-routing =
-                "Headphones", "HPL_OUT",
-                "Headphones", "HPR_OUT",
-                "Speaker", "HPL_OUT",
-                "Speaker", "HPR_OUT",
+                "Left Top Amp IN", "HPL_OUT",
+                "Left Bottom Amp IN", "HPL_OUT",
+                "Right Top Amp IN", "HPR_OUT",
+                "Right Bottom Amp IN", "HPR_OUT",
+                "Speaker", "Left Top Amp OUT",
+                "Speaker", "Left Bottom Amp OUT",
+                "Speaker", "Right Top Amp OUT",
+                "Speaker", "Right Bottom Amp OUT",
                 "Modem Uplink", "Modem DAI AOUT",
                 "Modem DAI AIN", "Modem Downlink";
-        aux-devs = <&modem_dai>, <&aw87390_pa_1>, <&aw87390_pa_2>, <&aw87390_pa_3>, <&aw87390_pa_4>;
+        aux-devs = <&modem_dai>, <&aw87390_pa_0>, <&aw87390_pa_1>, <&aw87390_pa_2>, <&aw87390_pa_3>;
 
         status = "okay";
 
@@ -367,62 +370,36 @@
     #address-cells = <1>;
     #size-cells = <0>;
 
-
-        aw87390_pa_1: aw87xxx_pa@58 {
-            compatible = "awinic,aw87xxx_pa";
-            reg = <0x58>;
-            dev_index = <0x00>;
-            status = "okay";
-        };
-
-        aw87390_pa_2: aw87xxx_pa@59 {
-            compatible = "awinic,aw87xxx_pa";
-            reg = <0x59>;
-            dev_index = <0x01>;
-            status = "okay";
-        };
-
-        aw87390_pa_3: aw87xxx_pa@5a {
-            compatible = "awinic,aw87xxx_pa";
-            reg = <0x5a>;
-            dev_index = <0x02>;
-            status = "okay";
-        };
-
-        aw87390_pa_4: aw87xxx_pa@5b {
-            compatible = "awinic,aw87xxx_pa";
-            reg = <0x5b>;
-            dev_index = <0x03>;
-            status = "okay";
-        };
-
-
-/*        aw87390_pa_1: audio-codec@58 {
+        aw87390_pa_0: audio-codec@58 {
             compatible = "awinic,aw87390";
             reg = <0x58>;
             #sound-dai-cells = <0>;
             awinic,audio-channel = <0>;
+            sound-name-prefix = "Left Top Amp";
         };
 
-        aw87390_pa_2: audio-codec@59 {
+        aw87390_pa_1: audio-codec@59 {
             compatible = "awinic,aw87390";
             reg = <0x59>;
             #sound-dai-cells = <0>;
             awinic,audio-channel = <1>;
+            sound-name-prefix = "Right Bottom Amp";
         };
 
-        aw87390_pa_3: audio-codec@5a {
+        aw87390_pa_2: audio-codec@5a {
             compatible = "awinic,aw87390";
             reg = <0x5a>;
             #sound-dai-cells = <0>;
             awinic,audio-channel = <2>;
+            sound-name-prefix = "Right Top Amp";
         };
 
-        aw87390_pa_4: audio-codec@5b {
+        aw87390_pa_3: audio-codec@5b {
             compatible = "awinic,aw87390";
             reg = <0x5b>;
             #sound-dai-cells = <0>;
             awinic,audio-channel = <3>;
-        }; */
+            sound-name-prefix = "Left Bottom Amp";
+        };
 
 };

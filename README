@@ -17,3 +17,5 @@ make ARCH=aarch64 CROSS_COMPILE=aarch64-linux-gnu-
 
 bspatch sml_a.bin sml_patched.bin sml_patch.bsdiff
 /spreadtrum_flash/spd_dump --wait 300 exec_addr 0x65015f08 fdl  fdl1-dl.bin 0x65000800 fdl fdl2-dl.bin 0x9efffe00  exec w sml_a sml_patched.bin reset
+
+cp aw87xxx_acf.bin /lib/firmware/postmarketos/aw87390_acf.bin
