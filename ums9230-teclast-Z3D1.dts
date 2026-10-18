@@ -403,3 +403,14 @@
         };
 
 };
+
+
+/* Bluetooth MAC: 2E:12:D2:E9:D4:CD */
+&{/wcn/btwf/sipc/channel@4/bluetooth@10} {
+    local-bd-address = [ CD D4 E9 D2 12 2E ];
+};
+
+/* Wi-Fi MAC: 5A:F9:7C:F9:50:9E */
+&{/wcn/btwf/sipc/channel@7} {
+    local-mac-address = [ 5A F9 7C F9 50 9E ];
+};
