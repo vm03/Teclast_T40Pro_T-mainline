@@ -1,6 +1,6 @@
 diff -ruN a/meson.build b/meson.build
 --- a/meson.build	2025-11-25 05:58:16.000000000 +0000
-+++ b/meson.build	2026-10-17 16:34:01.069278011 +0000
++++ b/meson.build	2026-10-19 05:49:34.056573841 +0000
 @@ -390,6 +390,7 @@
    'thuraya': {'available': true, 'shared': []},
    'tplink': {'available': true, 'shared': []},
@@ -11,7 +11,7 @@ diff -ruN a/meson.build b/meson.build
    'x22x': {'available': true, 'shared': []},
 diff -ruN a/meson_options.txt b/meson_options.txt
 --- a/meson_options.txt	2025-11-25 05:58:16.000000000 +0000
-+++ b/meson_options.txt	2026-10-17 16:34:01.069472182 +0000
++++ b/meson_options.txt	2026-10-19 05:49:34.056669640 +0000
 @@ -67,6 +67,7 @@
  option('plugin_thuraya', type: 'feature', value: 'auto', description: 'enable thuraya plugin support')
  option('plugin_tplink', type: 'feature', value: 'auto', description: 'enable tplink plugin support')
@@ -20,9 +20,71 @@ diff -ruN a/meson_options.txt b/meson_options.txt
  option('plugin_via', type: 'feature', value: 'auto', description: 'enable via plugin support')
  option('plugin_wavecom', type: 'feature', value: 'auto', description: 'enable wavecom plugin support')
  option('plugin_x22x', type: 'feature', value: 'auto', description: 'enable x22x plugin support')
+diff -ruN a/src/mm-broadband-modem.c b/src/mm-broadband-modem.c
+--- a/src/mm-broadband-modem.c	2025-11-25 05:58:16.000000000 +0000
++++ b/src/mm-broadband-modem.c	2026-10-19 05:49:34.071525461 +0000
+@@ -6289,10 +6289,11 @@
+ 
+     task = g_task_new (self, NULL, callback, user_data);
+ 
++    /* Never use a cached reply: the cancellation must reach the modem every time */
+     mm_base_modem_at_command (MM_BASE_MODEM (self),
+                               "+CUSD=2",
+                               10,
+-                              TRUE,
++                              FALSE,
+                               (GAsyncReadyCallback)cancel_command_ready,
+                               task);
+ }
+@@ -6366,8 +6367,19 @@
+     }
+ 
+     if (response && response[0]) {
+-        response = mm_strip_tag (response, "+CUSD:");
+-        cusd_process_string (self, response);
++        const gchar *cusd;
++
++        /* Unsolicited messages unrelated to USSD may be glued to the answer:
++         * use only the +CUSD one, if any (or the plain answer, if it looks like
++         * a reply, i.e. it starts with the status digit) */
++        cusd = strstr (response, "+CUSD:");
++        if (cusd) {
++            cusd_process_string (self, mm_strip_tag (cusd, "+CUSD:"));
++        } else if (g_ascii_isdigit (response[0])) {
++            cusd_process_string (self, response);
++        } else {
++            mm_obj_dbg (self, "ignoring unrelated data in the USSD request answer: '%s'", response);
++        }
+     }
+ }
+ 
+@@ -6675,6 +6687,23 @@
+         break;
+ 
+     case 2:
++        /* Some modems (e.g. Unisoc ones) report the final network reply as
++         * status 2 together with the text: handle it as a regular reply */
++        if (strchr (str, ',')) {
++            converted = decode_ussd_response (self, str, &error);
++            if (!converted)
++                break;
++
++            /* Response to the user's request? */
++            if (task)
++                break;
++
++            /* Network-initiated USSD-Notify */
++            mm_iface_modem_3gpp_ussd_update_network_notification (MM_IFACE_MODEM_3GPP_USSD (self), converted);
++            g_clear_pointer (&converted, g_free);
++            break;
++        }
++
+         /* Response to the user's request? */
+         if (task)
+             error = g_error_new (MM_CORE_ERROR, MM_CORE_ERROR_ABORTED, "USSD terminated by network");
 diff -ruN a/src/mm-modem-helpers.c b/src/mm-modem-helpers.c
 --- a/src/mm-modem-helpers.c	2025-11-25 05:58:16.000000000 +0000
-+++ b/src/mm-modem-helpers.c	2026-10-17 16:34:01.093985587 +0000
++++ b/src/mm-modem-helpers.c	2026-10-19 05:49:34.083304425 +0000
 @@ -678,6 +678,19 @@
          if (g_match_info_get_match_count (match_info) >= 7)
              call_info->number = mm_get_string_unquoted_from_match_info (match_info, 6);
@@ -43,9 +105,31 @@ diff -ruN a/src/mm-modem-helpers.c b/src/mm-modem-helpers.c
          list = g_list_append (list, call_info);
          call_info = NULL;
  
+@@ -2328,7 +2341,10 @@
+     *sw2 = 0;
+     *hex = NULL;
+ 
+-    if (!reply || !g_str_has_prefix (reply, "+CRSM:")) {
++    /* Unsolicited messages may be received right before the reply */
++    if (reply)
++        reply = strstr (reply, "+CRSM:");
++    if (!reply) {
+         g_set_error (error, MM_CORE_ERROR, MM_CORE_ERROR_FAILED, "Missing +CRSM prefix");
+         return FALSE;
+     }
+@@ -4280,7 +4296,8 @@
+      *
+      * We just read <index>, <stat> and the PDU itself.
+      */
+-    r = g_regex_new ("\\+CMGL:\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,(.*)\\r\\n([^\\r\\n]*)(\\r\\n)?",
++    /* Some modems (e.g. Unisoc ones) add an empty line between the header and the PDU */
++    r = g_regex_new ("\\+CMGL:\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,(.*)\\r\\n(?:[ \\t]*\\r\\n)*([^\\r\\n]*)(\\r\\n)?",
+                      G_REGEX_RAW | G_REGEX_OPTIMIZE, 0, NULL);
+     g_assert (r != NULL);
+ 
 diff -ruN a/src/plugins/meson.build b/src/plugins/meson.build
 --- a/src/plugins/meson.build	2025-11-25 05:58:16.000000000 +0000
-+++ b/src/plugins/meson.build	2026-10-17 16:34:01.124366742 +0000
++++ b/src/plugins/meson.build	2026-10-19 05:49:34.191197016 +0000
 @@ -1090,6 +1090,25 @@
    }}
  endif
@@ -74,7 +158,7 @@ diff -ruN a/src/plugins/meson.build b/src/plugins/meson.build
    sources = files(
 diff -ruN a/src/plugins/tests/test-udev-rules.c b/src/plugins/tests/test-udev-rules.c
 --- a/src/plugins/tests/test-udev-rules.c	2025-11-25 05:58:16.000000000 +0000
-+++ b/src/plugins/tests/test-udev-rules.c	2026-10-17 16:34:01.145164185 +0000
++++ b/src/plugins/tests/test-udev-rules.c	2026-10-19 05:49:34.223863616 +0000
 @@ -104,6 +104,14 @@
  }
  #endif
@@ -102,7 +186,7 @@ diff -ruN a/src/plugins/tests/test-udev-rules.c b/src/plugins/tests/test-udev-ru
  #endif
 diff -ruN a/src/plugins/unisoc/77-mm-unisoc-soc.rules b/src/plugins/unisoc/77-mm-unisoc-soc.rules
 --- a/src/plugins/unisoc/77-mm-unisoc-soc.rules	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/plugins/unisoc/77-mm-unisoc-soc.rules	2026-10-17 16:34:01.156111958 +0000
++++ b/src/plugins/unisoc/77-mm-unisoc-soc.rules	2026-10-19 05:49:34.235743622 +0000
 @@ -0,0 +1,60 @@
 +# do not edit this file, it will be overwritten on update
 +
@@ -166,7 +250,7 @@ diff -ruN a/src/plugins/unisoc/77-mm-unisoc-soc.rules b/src/plugins/unisoc/77-mm
 +LABEL="mm_unisoc_soc_end"
 diff -ruN a/src/plugins/unisoc/mm-broadband-bearer-unisoc.c b/src/plugins/unisoc/mm-broadband-bearer-unisoc.c
 --- a/src/plugins/unisoc/mm-broadband-bearer-unisoc.c	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/plugins/unisoc/mm-broadband-bearer-unisoc.c	2026-10-17 16:34:01.154742087 +0000
++++ b/src/plugins/unisoc/mm-broadband-bearer-unisoc.c	2026-10-19 05:49:34.235396674 +0000
 @@ -0,0 +1,664 @@
 +/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 +/*
@@ -834,7 +918,7 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-bearer-unisoc.c b/src/plugins/unisoc
 +}
 diff -ruN a/src/plugins/unisoc/mm-broadband-bearer-unisoc.h b/src/plugins/unisoc/mm-broadband-bearer-unisoc.h
 --- a/src/plugins/unisoc/mm-broadband-bearer-unisoc.h	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/plugins/unisoc/mm-broadband-bearer-unisoc.h	2026-10-17 16:34:01.153608941 +0000
++++ b/src/plugins/unisoc/mm-broadband-bearer-unisoc.h	2026-10-19 05:49:34.235057577 +0000
 @@ -0,0 +1,51 @@
 +/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 +/*
@@ -889,8 +973,8 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-bearer-unisoc.h b/src/plugins/unisoc
 +#endif /* MM_BROADBAND_BEARER_UNISOC_H */
 diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/mm-broadband-modem-unisoc.c
 --- a/src/plugins/unisoc/mm-broadband-modem-unisoc.c	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/plugins/unisoc/mm-broadband-modem-unisoc.c	2026-10-17 16:34:01.156215452 +0000
-@@ -0,0 +1,907 @@
++++ b/src/plugins/unisoc/mm-broadband-modem-unisoc.c	2026-10-19 05:49:34.235821951 +0000
+@@ -0,0 +1,1643 @@
 +/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 +/*
 + * This program is free software; you can redistribute it and/or modify
@@ -911,6 +995,9 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 + *  - signal quality from AT+CESQ (RSRP > RSCP > RXLEV); the +CESQ/+CSQ and
 + *    other vendor URCs are swallowed so they don't pollute command responses
 + *  - PIN/PUK retry counters from AT+XX=0..3
++ *  - model reported as "SIM <slot + 1>" (the AT+CGMM answer is only the firmware tag)
++ *  - network mode selection through AT+SPTESTMODE (both SIM slots at once)
++ *  - USSD requests as plain text with the 7-bit DCS, UCS-2 hex replies
 + *  - +CPMS=? answers wrapped in an additional pair of parentheses
 + *  - +CTZV network time URCs in "yy/mm/dd,hh:mm:ss+tz,dst" format
 + *  - call state reported only via ^DSCI URCs (no RING/+CLIP, +CLCC mode 1):
@@ -938,6 +1025,10 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +#include "mm-iface-modem-time.h"
 +#include "mm-iface-modem-voice.h"
 +#include "mm-call-list.h"
++#include "mm-iface-modem-3gpp-ussd.h"
++#include "mm-charsets.h"
++#include "mm-kernel-device.h"
++#include "mm-port.h"
 +#include "mm-base-modem-at.h"
 +#include "mm-modem-helpers.h"
 +#include "mm-port-serial-at.h"
@@ -947,11 +1038,49 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +static void iface_modem_init           (MMIfaceModemInterface          *iface);
 +static void iface_modem_messaging_init (MMIfaceModemMessagingInterface *iface);
 +static void iface_modem_voice_init     (MMIfaceModemVoiceInterface     *iface);
++static void iface_modem_3gpp_ussd_init (MMIfaceModem3gppUssdInterface  *iface);
 +
 +G_DEFINE_TYPE_EXTENDED (MMBroadbandModemUnisoc, mm_broadband_modem_unisoc, MM_TYPE_BROADBAND_MODEM, 0,
 +                        G_IMPLEMENT_INTERFACE (MM_TYPE_IFACE_MODEM, iface_modem_init)
 +                        G_IMPLEMENT_INTERFACE (MM_TYPE_IFACE_MODEM_MESSAGING, iface_modem_messaging_init)
-+                        G_IMPLEMENT_INTERFACE (MM_TYPE_IFACE_MODEM_VOICE, iface_modem_voice_init))
++                        G_IMPLEMENT_INTERFACE (MM_TYPE_IFACE_MODEM_VOICE, iface_modem_voice_init)
++                        G_IMPLEMENT_INTERFACE (MM_TYPE_IFACE_MODEM_3GPP_USSD, iface_modem_3gpp_ussd_init))
++
++/*****************************************************************************/
++/* Per-modem state */
++
++#define UNISOC_STATE_TAG "unisoc-state"
++
++typedef struct {
++    gboolean radio_started;    /* AT+SFUN=4 already sent at initialization */
++    gboolean mode_normalized;  /* default mode of the secondary slot already handled */
++    gboolean mode_urc_seen;    /* +SPTESTMODE notification received before we waited for it */
++    GTask   *mode_task;        /* network mode change waiting for the notification */
++    guint    mode_timeout_id;
++} UnisocState;
++
++static void
++unisoc_state_free (UnisocState *state)
++{
++    if (state->mode_timeout_id)
++        g_source_remove (state->mode_timeout_id);
++    g_clear_object (&state->mode_task);
++    g_free (state);
++}
++
++static UnisocState *
++get_state (MMBroadbandModemUnisoc *self)
++{
++    UnisocState *state;
++
++    state = g_object_get_data (G_OBJECT (self), UNISOC_STATE_TAG);
++    if (!state) {
++        state = g_new0 (UnisocState, 1);
++        g_object_set_data_full (G_OBJECT (self), UNISOC_STATE_TAG, state,
++                                (GDestroyNotify) unisoc_state_free);
++    }
++    return state;
++}
 +
 +/*****************************************************************************/
 +/* Power state handling: AT+SFUN */
@@ -968,16 +1097,46 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +}
 +
 +static void
-+load_power_state (MMIfaceModem        *self,
++radio_started_ready (MMBaseModem  *self,
++                     GAsyncResult *res,
++                     GTask        *task)
++{
++    /* Best effort */
++    mm_base_modem_at_command_finish (self, res, NULL);
++    g_task_return_int (task, MM_MODEM_POWER_STATE_LOW);
++    g_object_unref (task);
++}
++
++static void
++load_power_state (MMIfaceModem        *_self,
 +                  GAsyncReadyCallback  callback,
 +                  gpointer             user_data)
 +{
-+    GTask *task;
++    MMBroadbandModemUnisoc *self = MM_BROADBAND_MODEM_UNISOC (_self);
++    UnisocState            *state = get_state (self);
++    GTask                  *task;
++
++    task = g_task_new (self, NULL, callback, user_data);
++
++    /* The first time, switch the radio on right away: before that the modem
++     * answers SIM queries on the secondary slot with the data of the primary
++     * one (e.g. the ICCID), which later looks like a SIM swap and makes the
++     * generic code remove and probe the modem again. */
++    if (!state->radio_started) {
++        state->radio_started = TRUE;
++        mm_obj_dbg (self, "powering up the radio before reading the SIM information...");
++        mm_base_modem_at_command (MM_BASE_MODEM (self),
++                                  "+SFUN=4",
++                                  30,
++                                  FALSE,
++                                  (GAsyncReadyCallback) radio_started_ready,
++                                  task);
++        return;
++    }
 +
 +    /* AT+CFUN? is not meaningful on these modems; AT+SFUN has no query form.
 +     * Report low power so that the generic code always runs the power up
 +     * sequence (AT+SFUN=4) when the modem is enabled. */
-+    task = g_task_new (self, NULL, callback, user_data);
 +    g_task_return_int (task, MM_MODEM_POWER_STATE_LOW);
 +    g_object_unref (task);
 +}
@@ -1473,6 +1632,641 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +}
 +
 +/*****************************************************************************/
++/* USSD: with AT+CSCS="IRA" the modem takes the request as plain text, together
++ * with the 7-bit data coding scheme: AT+CUSD=1,"*102#",15. (Packed GSM 7-bit hex,
++ * or hex in the AT+CSCS charset, is rejected by the network.) Replies come as
++ * "+CUSD: <n>,<hex UCS-2 text>,<dcs>", and usually with n=2 (handled in the
++ * generic code as a normal reply when it carries text). */
++
++/* BEGIN-USSD-HELPERS */
++static gchar *
++unisoc_ussd_encode_text (const gchar  *command,
++                         GError      **error)
++{
++    const gchar *p;
++
++    for (p = command; *p; p++) {
++        if (*p < 0x20 || *p > 0x7E || *p == '"') {
++            g_set_error (error, MM_CORE_ERROR, MM_CORE_ERROR_INVALID_ARGS,
++                         "USSD command contains unsupported characters");
++            return NULL;
++        }
++    }
++    return g_strdup (command);
++}
++
++static gboolean
++unisoc_ussd_looks_like_ucs2 (const guint8 *data,
++                             gsize         len)
++{
++    gsize i;
++
++    if (len < 2 || (len % 2) != 0)
++        return FALSE;
++
++    for (i = 0; i < len; i += 2) {
++        guint unit = ((guint) data[i] << 8) | data[i + 1];
++
++        if ((unit >= 0x0020 && unit <= 0x007E) ||
++            unit == 0x000A || unit == 0x000D ||
++            (unit >= 0x00A0 && unit <= 0x052F) ||   /* Latin, Greek, Cyrillic */
++            (unit >= 0x2010 && unit <= 0x20CF))     /* punctuation, currency */
++            continue;
++        return FALSE;
++    }
++    return TRUE;
++}
++
++static gchar *
++unisoc_ussd_decode_hex (const gchar  *reply,
++                        GError      **error)
++{
++    g_autoptr(GByteArray) barray = NULL;
++    guint8               *bin;
++    gsize                 bin_len = 0;
++
++    bin = mm_utils_hexstr2bin (reply, -1, &bin_len, error);
++    if (!bin) {
++        g_prefix_error (error, "Couldn't convert HEX string to binary: ");
++        return NULL;
++    }
++    barray = g_byte_array_new_take (bin, bin_len);
++
++    /* UCS-2 replies (dcs 72) come hex encoded; anything else is plain text
++     * that just happens to be made of hex digits */
++    if (unisoc_ussd_looks_like_ucs2 (barray->data, barray->len))
++        return mm_modem_charset_bytearray_to_utf8 (barray, MM_MODEM_CHARSET_UCS2, FALSE, error);
++
++    return g_strdup (reply);
++}
++/* END-USSD-HELPERS */
++
++static gchar *
++ussd_encode (MMIfaceModem3gppUssd  *self,
++             const gchar           *command,
++             guint                 *scheme,
++             GError               **error)
++{
++    gchar *text;
++
++    text = unisoc_ussd_encode_text (command, error);
++    if (!text) {
++        g_prefix_error (error, "Failed to encode USSD command: ");
++        return NULL;
++    }
++
++    *scheme = MM_MODEM_GSM_USSD_SCHEME_7BIT;
++    return text;
++}
++
++static gchar *
++ussd_decode (MMIfaceModem3gppUssd  *self,
++             const gchar           *reply,
++             GError               **error)
++{
++    return unisoc_ussd_decode_hex (reply, error);
++}
++
++/*****************************************************************************/
++/* Network mode selection: AT+SPTESTMODE=<slot0 mode>,<slot1 mode>
++ *
++ * One command configures both SIM slots at once. Values (from oFono):
++ *   6 = LTE/auto, 22 / 14 = UMTS (primary / secondary slot),
++ *   15 / 10 = GSM (primary / secondary slot).
++ * Slot 0 is the primary slot, unless the other slot is on LTE: an active LTE
++ * slot is always the primary one. Only one RAT at a time can be chosen, and
++ * 4G is the same value as "any". */
++
++typedef enum {
++    UNISOC_RAT_ANY,
++    UNISOC_RAT_GSM,
++    UNISOC_RAT_UMTS,
++    UNISOC_RAT_LTE,
++} UnisocRat;
++
++static UnisocRat
++sprd_to_rat (gint val)
++{
++    switch (val) {
++    case 6:
++        return UNISOC_RAT_LTE;
++    case 10:
++    case 15:
++        return UNISOC_RAT_GSM;
++    case 14:
++    case 22:
++        return UNISOC_RAT_UMTS;
++    default:
++        return UNISOC_RAT_ANY;
++    }
++}
++
++static gint
++rat_to_sprd (UnisocRat rat,
++             gboolean  primary)
++{
++    switch (rat) {
++    case UNISOC_RAT_UMTS:
++        return primary ? 22 : 14;
++    case UNISOC_RAT_GSM:
++        return primary ? 15 : 10;
++    case UNISOC_RAT_ANY:
++    case UNISOC_RAT_LTE:
++    default:
++        return 6;
++    }
++}
++
++static guint
++get_sim_slot (MMBroadbandModemUnisoc *self)
++{
++    MMPortSerialAt *primary;
++    MMKernelDevice *kernel_device;
++
++    primary = mm_base_modem_peek_port_primary (MM_BASE_MODEM (self));
++    if (!primary)
++        return 0;
++
++    kernel_device = mm_port_peek_kernel_device (MM_PORT (primary));
++    if (kernel_device && mm_kernel_device_has_property (kernel_device, "ID_MM_UNISOC_SLOT"))
++        return (guint) MAX (mm_kernel_device_get_property_as_int (kernel_device, "ID_MM_UNISOC_SLOT"), 0);
++    return 0;
++}
++
++/* BEGIN-SPTESTMODE-PARSER */
++static gboolean
++parse_sptestmode (const gchar *response,
++                  gint        *val0,
++                  gint        *val1)
++{
++    g_auto(GStrv) lines = NULL;
++    guint         i;
++
++    /* The answer is "+SPTESTMODE: <slot0>,<slot1>[,...]". Stray "+SPTESTMODE: <n>"
++     * notification lines may be mixed in: take the first one with two values. */
++    lines = g_strsplit_set (response, "\r\n", -1);
++    for (i = 0; lines[i]; i++) {
++        const gchar *line = lines[i];
++
++        while (*line == ' ')
++            line++;
++        if (!g_str_has_prefix (line, "+SPTESTMODE:"))
++            continue;
++        if (sscanf (line + strlen ("+SPTESTMODE:"), " %d , %d", val0, val1) == 2)
++            return TRUE;
++    }
++    return FALSE;
++}
++/* END-SPTESTMODE-PARSER */
++
++/* Supported modes */
++
++static GArray *
++load_supported_modes_finish (MMIfaceModem  *self,
++                             GAsyncResult  *res,
++                             GError       **error)
++{
++    return g_task_propagate_pointer (G_TASK (res), error);
++}
++
++static void
++load_supported_modes (MMIfaceModem        *self,
++                      GAsyncReadyCallback  callback,
++                      gpointer             user_data)
++{
++    GTask                  *task;
++    GArray                 *combinations;
++    MMModemModeCombination  mode;
++
++    combinations = g_array_sized_new (FALSE, FALSE, sizeof (MMModemModeCombination), 3);
++
++    /* Automatic, LTE preferred (value 6) */
++    mode.allowed   = (MMModemMode) (MM_MODEM_MODE_2G | MM_MODEM_MODE_3G | MM_MODEM_MODE_4G);
++    mode.preferred = MM_MODEM_MODE_4G;
++    g_array_append_val (combinations, mode);
++
++    /* 3G only */
++    mode.allowed   = MM_MODEM_MODE_3G;
++    mode.preferred = MM_MODEM_MODE_NONE;
++    g_array_append_val (combinations, mode);
++
++    /* 2G only */
++    mode.allowed   = MM_MODEM_MODE_2G;
++    mode.preferred = MM_MODEM_MODE_NONE;
++    g_array_append_val (combinations, mode);
++
++    task = g_task_new (self, NULL, callback, user_data);
++    g_task_return_pointer (task, combinations, (GDestroyNotify) g_array_unref);
++    g_object_unref (task);
++}
++
++/* Setting the mode. The change is applied asynchronously: the modem answers OK,
++ * and some time later (about a second) it sends "+SPTESTMODE: <n>" when done. */
++
++static void cops_off_ready (MMBaseModem *self, GAsyncResult *res, GTask *task);
++
++static gboolean
++unisoc_set_mode_finish (MMBroadbandModemUnisoc  *self,
++                        GAsyncResult            *res,
++                        GError                 **error)
++{
++    return g_task_propagate_boolean (G_TASK (res), error);
++}
++
++static void
++mode_change_finished (MMBroadbandModemUnisoc *self)
++{
++    UnisocState *state = get_state (self);
++    GTask       *task;
++
++    if (state->mode_timeout_id) {
++        g_source_remove (state->mode_timeout_id);
++        state->mode_timeout_id = 0;
++    }
++
++    task = g_steal_pointer (&state->mode_task);
++    if (!task)
++        return;
++
++    g_task_return_boolean (task, TRUE);
++    g_object_unref (task);
++}
++
++static void
++sptestmode_notification (MMPortSerialAt         *port,
++                         GMatchInfo             *match_info,
++                         MMBroadbandModemUnisoc *self)
++{
++    UnisocState      *state = get_state (self);
++    g_autofree gchar *value = g_match_info_fetch (match_info, 1);
++
++    mm_obj_dbg (self, "network mode change notification received: %s", value ? value : "?");
++
++    if (state->mode_task)
++        mode_change_finished (self);
++    else
++        state->mode_urc_seen = TRUE;
++}
++
++static void
++cops_on_ready (MMBaseModem  *self,
++               GAsyncResult *res,
++               GTask        *task)
++{
++    /* Best effort */
++    mm_base_modem_at_command_finish (self, res, NULL);
++    g_task_return_boolean (task, TRUE);
++    g_object_unref (task);
++}
++
++static void
++cops_off_ready (MMBaseModem  *self,
++                GAsyncResult *res,
++                GTask        *task)
++{
++    /* Best effort */
++    mm_base_modem_at_command_finish (self, res, NULL);
++    mm_base_modem_at_command (self,
++                              "+COPS=0",
++                              60,
++                              FALSE,
++                              (GAsyncReadyCallback) cops_on_ready,
++                              task);
++}
++
++static gboolean
++mode_change_timeout (MMBroadbandModemUnisoc *self)
++{
++    UnisocState *state = get_state (self);
++    GTask       *task;
++
++    state->mode_timeout_id = 0;
++
++    task = g_steal_pointer (&state->mode_task);
++    if (!task)
++        return G_SOURCE_REMOVE;
++
++    /* No notification: force a new registration, so that the mode is applied */
++    mm_obj_dbg (self, "no network mode change notification received, registering again in the network...");
++    mm_base_modem_at_command (MM_BASE_MODEM (self),
++                              "+COPS=2",
++                              15,
++                              FALSE,
++                              (GAsyncReadyCallback) cops_off_ready,
++                              task);
++    return G_SOURCE_REMOVE;
++}
++
++static void
++sptestmode_set_ready (MMBaseModem  *_self,
++                      GAsyncResult *res,
++                      GTask        *task)
++{
++    MMBroadbandModemUnisoc *self = MM_BROADBAND_MODEM_UNISOC (_self);
++    UnisocState            *state = get_state (self);
++    GError                 *error = NULL;
++
++    if (!mm_base_modem_at_command_finish (_self, res, &error)) {
++        g_task_return_error (task, error);
++        g_object_unref (task);
++        return;
++    }
++
++    if (state->mode_urc_seen) {
++        /* The notification came already */
++        state->mode_urc_seen = FALSE;
++        g_task_return_boolean (task, TRUE);
++        g_object_unref (task);
++        return;
++    }
++
++    /* Wait for the notification, but not forever */
++    g_clear_object (&state->mode_task);
++    state->mode_task = task;
++    state->mode_timeout_id = g_timeout_add_seconds_full (G_PRIORITY_DEFAULT,
++                                                         10,
++                                                         (GSourceFunc) mode_change_timeout,
++                                                         g_object_ref (self),
++                                                         g_object_unref);
++}
++
++static void
++sptestmode_query_other_ready (MMBaseModem  *_self,
++                              GAsyncResult *res,
++                              GTask        *task)
++{
++    MMBroadbandModemUnisoc *self = MM_BROADBAND_MODEM_UNISOC (_self);
++    const gchar            *response;
++    GError                 *error = NULL;
++    UnisocRat               target, other;
++    gboolean                primary;
++    guint                   slot;
++    gint                    val0, val1;
++    g_autofree gchar       *command = NULL;
++
++    target = (UnisocRat) GPOINTER_TO_UINT (g_task_get_task_data (task));
++
++    response = mm_base_modem_at_command_finish (_self, res, &error);
++    if (!response) {
++        g_task_return_error (task, error);
++        g_object_unref (task);
++        return;
++    }
++
++    if (!parse_sptestmode (response, &val0, &val1)) {
++        g_task_return_new_error (task, MM_CORE_ERROR, MM_CORE_ERROR_FAILED,
++                                 "Couldn't parse +SPTESTMODE response: '%s'", response);
++        g_object_unref (task);
++        return;
++    }
++
++    slot    = get_sim_slot (self);
++    primary = (slot == 0);
++    other   = sprd_to_rat (slot == 0 ? val1 : val0);
++
++    /* An active LTE slot is always the primary one */
++    if (other == UNISOC_RAT_LTE)
++        primary = FALSE;
++
++    if (slot == 0) {
++        val0 = rat_to_sprd (target, primary);
++        val1 = rat_to_sprd (other, !primary);
++    } else {
++        val0 = rat_to_sprd (other, !primary);
++        val1 = rat_to_sprd (target, primary);
++    }
++
++    get_state (self)->mode_urc_seen = FALSE;
++
++    command = g_strdup_printf ("+SPTESTMODE=%d,%d", val0, val1);
++    mm_obj_dbg (self, "setting network mode: %s", command);
++    mm_base_modem_at_command (_self,
++                              command,
++                              10,
++                              FALSE,
++                              (GAsyncReadyCallback) sptestmode_set_ready,
++                              task);
++}
++
++static void
++unisoc_set_mode (MMBroadbandModemUnisoc *self,
++                 UnisocRat               target,
++                 GAsyncReadyCallback     callback,
++                 gpointer                user_data)
++{
++    GTask *task;
++
++    task = g_task_new (self, NULL, callback, user_data);
++    g_task_set_task_data (task, GUINT_TO_POINTER ((guint) target), NULL);
++
++    /* Both slots are configured with a single command: query the other first */
++    mm_base_modem_at_command (MM_BASE_MODEM (self),
++                              "+SPTESTMODE?",
++                              3,
++                              FALSE,
++                              (GAsyncReadyCallback) sptestmode_query_other_ready,
++                              task);
++}
++
++/* Current modes */
++
++typedef struct {
++    MMModemMode allowed;
++    MMModemMode preferred;
++} CurrentModes;
++
++static gboolean
++load_current_modes_finish (MMIfaceModem  *self,
++                           GAsyncResult  *res,
++                           MMModemMode   *allowed,
++                           MMModemMode   *preferred,
++                           GError       **error)
++{
++    g_autofree CurrentModes *modes = NULL;
++
++    modes = g_task_propagate_pointer (G_TASK (res), error);
++    if (!modes)
++        return FALSE;
++
++    *allowed   = modes->allowed;
++    *preferred = modes->preferred;
++    return TRUE;
++}
++
++static void
++return_current_modes (GTask     *task,
++                      UnisocRat  rat)
++{
++    CurrentModes *modes;
++
++    modes = g_new0 (CurrentModes, 1);
++    switch (rat) {
++    case UNISOC_RAT_GSM:
++        modes->allowed   = MM_MODEM_MODE_2G;
++        modes->preferred = MM_MODEM_MODE_NONE;
++        break;
++    case UNISOC_RAT_UMTS:
++        modes->allowed   = MM_MODEM_MODE_3G;
++        modes->preferred = MM_MODEM_MODE_NONE;
++        break;
++    case UNISOC_RAT_LTE:
++    case UNISOC_RAT_ANY:
++    default:
++        modes->allowed   = (MMModemMode) (MM_MODEM_MODE_2G | MM_MODEM_MODE_3G | MM_MODEM_MODE_4G);
++        modes->preferred = MM_MODEM_MODE_4G;
++        break;
++    }
++
++    g_task_return_pointer (task, modes, g_free);
++    g_object_unref (task);
++}
++
++static gboolean
++unisoc_keep_default_mode (MMBroadbandModemUnisoc *self)
++{
++    MMPortSerialAt *primary;
++    MMKernelDevice *kernel_device;
++
++    primary = mm_base_modem_peek_port_primary (MM_BASE_MODEM (self));
++    if (!primary)
++        return FALSE;
++
++    kernel_device = mm_port_peek_kernel_device (MM_PORT (primary));
++    return kernel_device && mm_kernel_device_get_property_as_boolean (kernel_device, "ID_MM_UNISOC_KEEP_MODE");
++}
++
++static void
++default_mode_normalized (GObject      *source,
++                         GAsyncResult *res,
++                         GTask        *task)
++{
++    g_autoptr(GError) error = NULL;
++
++    if (!unisoc_set_mode_finish (MM_BROADBAND_MODEM_UNISOC (source), res, &error)) {
++        mm_obj_warn (source, "couldn't switch the secondary SIM slot to automatic mode: %s", error->message);
++        return_current_modes (task, UNISOC_RAT_GSM);
++        return;
++    }
++
++    return_current_modes (task, UNISOC_RAT_LTE);
++}
++
++static void
++sptestmode_query_ready (MMBaseModem  *_self,
++                        GAsyncResult *res,
++                        GTask        *task)
++{
++    MMBroadbandModemUnisoc *self = MM_BROADBAND_MODEM_UNISOC (_self);
++    UnisocState            *state = get_state (self);
++    const gchar            *response;
++    GError                 *error = NULL;
++    gint                    val0, val1, value;
++    guint                   slot;
++
++    response = mm_base_modem_at_command_finish (_self, res, &error);
++    if (!response) {
++        g_task_return_error (task, error);
++        g_object_unref (task);
++        return;
++    }
++
++    if (!parse_sptestmode (response, &val0, &val1)) {
++        g_task_return_new_error (task, MM_CORE_ERROR, MM_CORE_ERROR_FAILED,
++                                 "Couldn't parse +SPTESTMODE response: '%s'", response);
++        g_object_unref (task);
++        return;
++    }
++
++    slot  = get_sim_slot (self);
++    value = (slot == 0) ? val0 : val1;
++
++    /* After a boot the secondary slot is left in a 2G only mode (10). With that
++     * mode and both SIMs registered the modem ends up stuck unless the mode is
++     * changed soon, so use the automatic mode by default (set the
++     * ID_MM_UNISOC_KEEP_MODE udev property to avoid it). */
++    if (slot == 1 && value == 10 && !state->mode_normalized && !unisoc_keep_default_mode (self)) {
++        state->mode_normalized = TRUE;
++        mm_obj_info (self, "secondary SIM slot in the default 2G only mode: switching to automatic mode");
++        unisoc_set_mode (self, UNISOC_RAT_LTE, (GAsyncReadyCallback) default_mode_normalized, task);
++        return;
++    }
++
++    return_current_modes (task, sprd_to_rat (value));
++}
++
++static void
++load_current_modes (MMIfaceModem        *self,
++                    GAsyncReadyCallback  callback,
++                    gpointer             user_data)
++{
++    GTask *task;
++
++    task = g_task_new (self, NULL, callback, user_data);
++    mm_base_modem_at_command (MM_BASE_MODEM (self),
++                              "+SPTESTMODE?",
++                              3,
++                              FALSE,
++                              (GAsyncReadyCallback) sptestmode_query_ready,
++                              task);
++}
++
++/* Set current modes */
++
++static gboolean
++set_current_modes_finish (MMIfaceModem  *self,
++                          GAsyncResult  *res,
++                          GError       **error)
++{
++    return g_task_propagate_boolean (G_TASK (res), error);
++}
++
++static void
++set_current_modes (MMIfaceModem        *self,
++                   MMModemMode          allowed,
++                   MMModemMode          preferred,
++                   GAsyncReadyCallback  callback,
++                   gpointer             user_data)
++{
++    UnisocRat target;
++
++    if (allowed & MM_MODEM_MODE_4G)
++        target = UNISOC_RAT_LTE;
++    else if (allowed & MM_MODEM_MODE_3G)
++        target = UNISOC_RAT_UMTS;
++    else
++        target = UNISOC_RAT_GSM;
++
++    unisoc_set_mode (MM_BROADBAND_MODEM_UNISOC (self), target, callback, user_data);
++}
++
++/*****************************************************************************/
++/* Model: the AT+CGMM answer is just the firmware tag ("V1.0.1-B7"), the same for
++ * both SIM slots. Report the SIM slot instead, which is what e.g. GNOME Calls
++ * shows as name of the call origin (when the SIM doesn't have an own number). */
++
++static gchar *
++load_model_finish (MMIfaceModem  *self,
++                   GAsyncResult  *res,
++                   GError       **error)
++{
++    return g_task_propagate_pointer (G_TASK (res), error);
++}
++
++static void
++load_model (MMIfaceModem        *self,
++            GAsyncReadyCallback  callback,
++            gpointer             user_data)
++{
++    GTask *task;
++
++    task = g_task_new (self, NULL, callback, user_data);
++    g_task_return_pointer (task,
++                           g_strdup_printf ("SIM %u", get_sim_slot (MM_BROADBAND_MODEM_UNISOC (self)) + 1),
++                           g_free);
++    g_object_unref (task);
++}
++
++/*****************************************************************************/
 +/* Voice calls.
 + *
 + * Unisoc modems report call state exclusively through ^DSCI URCs:
@@ -1661,6 +2455,7 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +    g_autoptr(GRegex) cdu_regex = NULL;
 +    g_autoptr(GRegex) cesq_regex = NULL;
 +    g_autoptr(GRegex) noise_regex = NULL;
++    g_autoptr(GRegex) sptestmode_urc_regex = NULL;
 +    MMPortSerialAt   *ports[2];
 +    guint             i;
 +
@@ -1683,10 +2478,15 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +
 +    /* Vendor URCs without any meaning for MM. Left unhandled they would be
 +     * glued to the response of the next command. */
-+    noise_regex = g_regex_new ("\\r\\n(?:\\+CSQ|\\+SIND|\\+ECIND|\\+SPCDIP|\\+SPCHRU|\\+SPERRLOG|\\+EARLYMEDIA|"
-+                               "\\+CDUU|\\+SPIMSPDPINFO|\\+SPPCODATA|\\^CONN|\\^CEND):[^\\r\\n]*\\r\\n",
++    noise_regex = g_regex_new ("\\r\\n(?:\\+SP(?!TESTMODE)[A-Z0-9]+|\\+PRENWINFU|\\+IMSREGADDR|\\+CSQ|\\+SIND|\\+ECIND|"
++                               "\\+EARLYMEDIA|\\+CDUU|\\^CONN|\\^CEND|\\^ORIG):[^\\r\\n]*\\r\\n",
 +                               G_REGEX_RAW | G_REGEX_OPTIMIZE, 0, NULL);
 +    g_assert (noise_regex);
++
++    /* "+SPTESTMODE: <n>" (one value) is a notification sent after a mode change,
++     * while the answer to AT+SPTESTMODE? has several comma separated values */
++    sptestmode_urc_regex = g_regex_new ("\\r\\n\\+SPTESTMODE:\\s*(\\d+)\\r\\n", G_REGEX_RAW | G_REGEX_OPTIMIZE, 0, NULL);
++    g_assert (sptestmode_urc_regex);
 +
 +
 +    ports[0] = mm_base_modem_peek_port_primary (MM_BASE_MODEM (self));
@@ -1719,6 +2519,11 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +                                                       noise_regex,
 +                                                       NULL,
 +                                                       NULL,
++                                                       NULL);
++        mm_port_serial_at_add_unsolicited_msg_handler (ports[i],
++                                                       sptestmode_urc_regex,
++                                                       (MMPortSerialAtUnsolicitedMsgFn) sptestmode_notification,
++                                                       self,
 +                                                       NULL);
 +    }
 +}
@@ -1775,6 +2580,14 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +    iface->load_unlock_retries_finish     = load_unlock_retries_finish;
 +    iface->create_bearer                  = create_bearer;
 +    iface->create_bearer_finish           = create_bearer_finish;
++    iface->load_model                     = load_model;
++    iface->load_model_finish              = load_model_finish;
++    iface->load_supported_modes           = load_supported_modes;
++    iface->load_supported_modes_finish    = load_supported_modes_finish;
++    iface->load_current_modes             = load_current_modes;
++    iface->load_current_modes_finish      = load_current_modes_finish;
++    iface->set_current_modes              = set_current_modes;
++    iface->set_current_modes_finish       = set_current_modes_finish;
 +}
 +
 +static void
@@ -1792,6 +2605,13 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +}
 +
 +static void
++iface_modem_3gpp_ussd_init (MMIfaceModem3gppUssdInterface *iface)
++{
++    iface->encode = ussd_encode;
++    iface->decode = ussd_decode;
++}
++
++static void
 +mm_broadband_modem_unisoc_class_init (MMBroadbandModemUnisocClass *klass)
 +{
 +    MMBroadbandModemClass *broadband_modem_class = MM_BROADBAND_MODEM_CLASS (klass);
@@ -1800,7 +2620,7 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.c b/src/plugins/unisoc/
 +}
 diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.h b/src/plugins/unisoc/mm-broadband-modem-unisoc.h
 --- a/src/plugins/unisoc/mm-broadband-modem-unisoc.h	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/plugins/unisoc/mm-broadband-modem-unisoc.h	2026-10-17 16:34:01.153533555 +0000
++++ b/src/plugins/unisoc/mm-broadband-modem-unisoc.h	2026-10-19 05:49:34.235029731 +0000
 @@ -0,0 +1,49 @@
 +/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 +/*
@@ -1853,7 +2673,7 @@ diff -ruN a/src/plugins/unisoc/mm-broadband-modem-unisoc.h b/src/plugins/unisoc/
 +#endif /* MM_BROADBAND_MODEM_UNISOC_H */
 diff -ruN a/src/plugins/unisoc/mm-plugin-unisoc.c b/src/plugins/unisoc/mm-plugin-unisoc.c
 --- a/src/plugins/unisoc/mm-plugin-unisoc.c	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/plugins/unisoc/mm-plugin-unisoc.c	2026-10-17 16:34:01.155267516 +0000
++++ b/src/plugins/unisoc/mm-plugin-unisoc.c	2026-10-19 05:49:34.235578409 +0000
 @@ -0,0 +1,91 @@
 +/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 +/*
